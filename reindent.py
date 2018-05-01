@@ -3,7 +3,7 @@
 Modify aesthetic properties of source code like indentation
 
 NOTE: String literals MUST BE r'raw' strings, or have any of the
-chaacters prefixed with a backslash, prefixed with a backslash.
+chacters prefixed with a backslash, prefixed with a backslash.
 For example:
 Indenter("b'abc\x00'") will generate a syntax error, and
 Indenter("b'abc\\x00'") or Indenter(r"b'abc\x00') will not
