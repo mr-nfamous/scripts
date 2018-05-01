@@ -149,4 +149,24 @@ def e(snip, *,
     low, *ops = ops
     while ops and stdev(ops) > 0.001:
         ops.pop()
-    return Result(num_execs / mean(ops)),  time_taken
+    return Result(num_execs / mean(ops))
+
+# A few outliers, but much less variance than timeit.autorange
+##>>> e('random()', duration=2.0)
+##float(14_744_203)
+##>>> e('random()', duration=2.0)
+##float(14_791_134)
+##>>> e('random()', duration=2.0)
+##float(14_392_384)
+##>>> e('random()', duration=2.0)
+##float(14_782_523)
+##>>> e('random()', duration=2.0)
+##float(14_798_640)
+##>>> e('random()', duration=2.0)
+##float(14_019_377)
+##>>> e('random()', duration=2.0)
+##float(14_593_137)
+##>>> e('random()', duration=2.0)
+##float(14_783_576)
+##>>> e('random()', duration=2.0)
+##float(14_474_003)
