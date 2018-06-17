@@ -2,6 +2,7 @@
 import math
 import re
 import string
+import gc
 
 from itertools import repeat
 from random import choice
@@ -180,6 +181,10 @@ def e(snip, *,
     # abnormally slow trials (not sure if this really accomplishes anything)
     while len(ops)>1 and stdev(ops) > 0.001:
         ops.pop()
+    # apparently something is (possibly) bugged to cause this to
+    # temporarily leak references to the automatically generated func
+    # Manually call gc.collect
+    gc.collect()
     return Result(num_execs / mean(ops))
 
 
