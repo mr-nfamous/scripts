@@ -42,6 +42,9 @@ class CachedProperty(property):
 if __name__ == '__main__':
     class ex:
         
+        # the "ex" instance will need to call `bind_to_cached_property`
+        # at some point before this is accessed it inst.name won't work.
+        # '_namegetter' will be where the instance fget is stored
         name = CachedProperty('_namegetter')
 
         @property
@@ -55,6 +58,8 @@ if __name__ == '__main__':
                 return self._game
             
         def __init__(self, cls=str):
+            # self.pensive will only be called once: the first time self.name is
+            # accessed. Functionally identical to ex.game
             CachedProperty.bind_to_cached_property(self, 'name', self.pensive)
             self.cls = cls
 
