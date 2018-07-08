@@ -1,3 +1,5 @@
+from functools import lru_cache
+from operator import methodcaller
 class CachedProperty(property):
 
     def __init__(self, fget:str, *args, **kws):
