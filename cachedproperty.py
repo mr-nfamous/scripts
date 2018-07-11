@@ -45,7 +45,7 @@ the speed...
 '''
 
 import weakref
-from functools import cowraps
+from functools import wraps
 from itertools import starmap, cycle
 from operator import methodcaller
 
