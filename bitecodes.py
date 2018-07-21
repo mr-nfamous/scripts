@@ -57,8 +57,9 @@ def descriptor_getter(cls):
 def tuple_copy(tup):
     return (*tup,)
 
-#@public
+@public
 def descriptor_getattr(ob, attr):
+    'Get unbound descriptor instance from an instance'
     getter = descriptor_getter(get_class(ob))
     try:
         return getter(attr, ob)
@@ -68,7 +69,8 @@ def descriptor_getattr(ob, attr):
     raise error
 
 get_func_attr = descriptor_getter(FunctionType)
-#@public
+
+@public
 def get_code_info(f):
     if is_code(f):
         co = f
@@ -99,14 +101,12 @@ def deepcopy_cell(cell):
 
 content_getter = attrgetter('cell_contents')
 
-#@public
 def deepcopy_cell(cell):
     if not is_cell(cell):
         raise TypeError('cell to deepcopy must be a cell object')
     contents = _deepcopy(cell.cell_contents)
     return (lambda: contents).__closure__[0]
 
-@public
 def deepcopy_closure(closure):
     if closure is None:
         return
@@ -140,6 +140,7 @@ public_constants(**CoFlag.__members__)
 is_co_flag = CoFlag.__instancecheck__
 _get_co_flags = type.__dict__['__flags__'].__get__
 
+@public
 def is_heap_type(ob):
     '`ob` is a pure Python class'
     return truth(isinstance(ob, type) and _get_co_flags(ob) & 0x200)
@@ -172,6 +173,7 @@ def update_code(ob, **kws):
         info = CodeInfo(*ob.__code__)
     return CodeType(*info._replace(**kws))
 
+@public
 def rebuild_func(
     func,
     cls=None,
@@ -223,8 +225,8 @@ def rebuild_func(
     If `defaults_copy` and `kwdefaults_copy` return None, the new
     function will no longer have default values.
 
-    Otherwise, shallow copies of __defaults__, __kwdefaults__,
-    __dict__, will be made, and a deepcopy of __closure__ will be made
+    Otherwise, shallow copies of __defaults__, __kwdefaults__, and
+    __dict__ are used, along with a deepcopy of __closure__.
     
     Parameters:
 
