@@ -280,13 +280,13 @@ def ptr_safe_exec(*args, **kws):
         return impl
     return wrapper
 
-def shitty():
+def py2peek():
     f = of = sys._getframe()
     i = []
     while f is not None:
         i.append(f)
         if len(i) > 100:
-            raise OverflowError("omg more than 100")
+            raise OverflowError("more than 100")
         if f.f_locals.get('__name__') == '__main__':
             f.f_locals['f'] = of
             f.f_locals['frs'] = i
