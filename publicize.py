@@ -1,15 +1,50 @@
 
-"""Set of utilities to manage the way a module is exported
+"""Set of utilities to ease the importing and exporting of modules
 
-Detailed error messages make finding issues easy.
+--------------------------------------------------------------------------------
+================================================================================
 
-Works in both Python 2.7 and 3.6.
+NOTE: I've made may sporadic changes to this since 1.3.0 went on PyPI.
+In that time I haven't checekd for PY2 compatability, so if it doesn't
+work let me know.
+
+================================================================================
+--------------------------------------------------------------------------------
+Detailed error messages make finding module namespace conflicts easy.
+
+Works in both Python 2.7 and 3.3+.
+
+Some update highlights since last release(1.3.0):
+
+    * Added function: private_star_import(module, prefix='_', **opts)
+
+    * Fixed reimport module. Since extension modules cannot be reloaded
+    an error is correctly raised when attempting to reimport one.
+    Furthermore there is a now way to restore the previous incarnation
+    of the module.
+
+    * Added a whole bunch of random utility functions it didn't make
+    sense to give this module a dependency, especially when they weren't
+    compatible with 2.7. They are of course not part of the public api
+    don't hesitate to see what is new and abusable!
 
 Functions:
 
-------
+-------------------
+private_star_import(module, prefix='_',
+                    overwrite=False, ignore_dunder=True): -> module
+-------------------
+    ** NEW
+    `from module import *` prefix imported names with `prefix`
+
+    No more annoying "from math import log as _log, exp as _exp", etc.
+    By default, prefixes imported names with an undersore to ensure any
+    of the imports won't be exported unless explicitly added to __all__
+    afterwards.
+
+-------
 @public(*objects:[str, object], overwrite=False) -> objects[0]:
-------
+-------
     Mark objects (or names) as public and automatically append
     them to __all__.
 
@@ -21,7 +56,7 @@ Functions:
         public(object_or_name, *objects_or_names, overwrite=False)
             If an object is passed as an argument, all names that refer
             to that object will be added to __all__. If a string is
-            passed, the name will be added assuming the reference
+            passed, the name will be added, assuming the reference
             actually exists.
 
 ----------------
@@ -36,6 +71,7 @@ public_from_import(module, *names) -> {**imported}:
 
 --------------
 publish_module(module) -> module:
+--------------
     Publish everything that would be gotten with `from module import *`
 
 ----------------
@@ -55,11 +91,13 @@ star_import(module,
     If ignore_private is True, then _private names prepended with an
     underscore are ignored.
 
-    If ignore_metadata is False, then module metadata attributes
+    ** UPDATE: replaced `ignore_metadata` which defaulted to True
+    to `import_metadata=False. If `import_metadata` is True, module
+    metadata attributes
     such as __author__ and __version__ are imported.
 
-    Special attributes of modules such as __path__, __file__,
-    and __all__ are never imported.
+    Certain special attributes of modules such as __path__, __file__,
+    __all__, (and in 3.7, __getattr__ and __dir)  are never imported.
 
 -------------------
 reverse_star_import(module, ignore=set())
@@ -71,22 +109,94 @@ reverse_star_import(module, ignore=set())
 ---------------
 reimport_module(module) -> module:
 ---------------
-    Clear module's dict and reimport it.
+    Clear a Python module's dict and reimport it.
+
+    ** UPDATE: It actually works now. See the updated documentation but
+    a tl;dr is that now it's possible for the reloading to only affect
+    the caller's scope and other modules will actually be affected
+    since the original module object is never destroyed.
 """
 
 from __future__ import print_function, with_statement, unicode_literals
 
 __author__ = 'Dan Snider'
-__version__ = '1.3.0'
+__version__ = '1.4.0'
 
+import copy
 import functools
 import importlib
+import runpy
 import sys
 import __main__
+import time
+from collections import namedtuple
 from types import ModuleType
-from operator import attrgetter, methodcaller
+from operator import attrgetter, itemgetter, methodcaller
+
+class_name = attrgetter('__class__.__name__')
+CodeType = (lambda: 1).__code__.__class__
+
+peek = namedtuple('peek', 'named, varargs, varkws, names')
+def peek_args(stack_offset=0):
+    'Get ([self], (pos/kwo args,), *, **, (p/kwnames)) from stack' """
+
+    This is far more complex (and horribly inefficient) due to my
+    inability to write efficient version agnostic code.
+
+    Here's a comparision of The results with and without splitself for
+    a method:
+
+        class Thing:
+
+            def f(self, w, x=5, *y, z=2, **kws):
+                print(*peek_args(splitself=True), sep=' @ ')
+
+        >>> self = Thing()
+        >>> self.f(2000)
+        (Thing(),
+        instance("hi")
+"""
+
+    global fm, pfm
+    pfm   = sys._getframe()
+    fm    = sys._getframe(2+stack_offset)
+    co    = fm.f_code
+    ns    = fm.f_locals
+    names = co.co_varnames
+    flags = co.co_flags
+
+    i = co.co_argcount + get_code_kwonlyargcount(co)
+    j = ((4 & flags) or None) and i
+    k = ((8 & flags) or None) and ((i+1) if j else i)
+
+    vargs = ns[names[j]] if j is not None else None
+    kwargs= ns[names[k]] if k is not None else None
+    if not i:
+        return peek((), vargs, kwargs, ())
+
+    x = names[:i]
+    return peek(tuple(ns[k] for k in x), vargs, kwargs, x)
+
+class NOTHING(object):
+    __nothing = None
+
+    def __new__(cls):
+        nada = cls.__nothing
+        if nada is None:
+            nada = cls.__nothing = object.__new__(cls)
+        return nada
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return 'NOTHING'
+
+NOTHING = NOTHING()
 
 if sys.version_info < (3,):
+    ptr_base = 'class ptr_base(object): __metaclass__ = pmeta'
+
     from __builtin__ import xrange as range
     from imp import reload as _reload
     from itertools import (ifilterfalse as filterfalse,
@@ -94,22 +204,165 @@ if sys.version_info < (3,):
                            izip as zip,
                            ifilter as filter,
                            groupby)
+    mapping_proxy = dict.copy
+    get_code_kwonlyargcount = lambda ob: 0
     dict_items = dict.viewitems
     dict_keys = dict.viewkeys
     dict_values = dict.viewvalues
+
 else:
+    ptr_base = 'class ptr_base(metaclass=pmeta): pass'
     from importlib import reload as _reload
     from itertools import filterfalse, groupby
+    from types import MappingProxyType as mapping_proxy
+    get_code_kwonlyargcount = CodeType.co_kwonlyargcount.__get__
     dict_items = dict.items
     dict_keys = dict.keys
     dict_values = dict.values
     basestring = str
 
+class pmeta(type):
+
+    def __setattr__(self, attr, value):
+        raise TypeError("cannot set attribute")
+
+    def __mul__(self, n):
+
+        def ptrs(*args, **kws):
+            default = kws.get('default', NOTHING)
+            it = iter(args)
+            for i in range(max(len(args), n)):
+                r = next(it, self)
+                yield self(r) if r is not self else self(default)
+
+        return ptrs
+exec(ptr_base, globals())
+
+def ptr_safe_base(self, default=None):
+    try:
+        return self._base
+    except:
+        return default
+
+def ptr_safe_args(self, arg, n=0, *args):
+    if len(args) > n:
+        name = sys._getframe(1).f_code.co_name
+        raise TypeError("ptr method '%s' expects %d arguments"%(name, n))
+    for arg in (arg,)+args:
+        if arg is self:
+            raise RecursionError("ptr points to self")
+    return arg
+
+def ptr_safe_exec(*args, **kws):
+    n = len(args)
+    if n<2:
+        x, y = ((args or 0) and args[0],)*2; n = {x}
+    else:
+        x, y = range(args); n = set(x, y+1)
+    default = kws.pop('default', NOTHING)
+
+    def wrapper(f):
+        s = 'argument' if x==y else 'arguments'
+        name = f.__name__
+        m = "%s() expects %d %s, got %%d"%(name, y-x, s)
+        def impl(self, *args):
+            if len(args) not in n:
+                raise TypeError(m%len(args))
+            try:
+                base = self._base
+            except:
+                return default
+            t = self._base
+            r = f(self, *args)
+            if self._base is self:
+                raise RecursionError("ptr points to self")
+            return r
+        return impl
+    return wrapper
+
+def shitty():
+    f = of = sys._getframe()
+    i = []
+    while f is not None:
+        i.append(f)
+        if len(i) > 100:
+            raise OverflowError("omg more than 100")
+        if f.f_locals.get('__name__') == '__main__':
+            f.f_locals['f'] = of
+            f.f_locals['frs'] = i
+            break
+        f = f.f_back
+    else:
+        raise NameError("cain't find main")
+    
+class ptr(ptr_base):
+
+    __slots__ = ('_base',)
+
+    def __init__(self, ob=NOTHING):
+        self._base = ptr_safe_args(self, ob, 0)
+
+    def __call__(self, *args):
+        if args:
+            self._base = ptr_safe_args(self, args[0], 0, *args[1:])
+        return self._base
+
+    @ptr_safe_exec(1)
+    def __getattr__(self, a):
+        return getattr(self._base, a)
+
+    @ptr_safe_exec(1)
+    def __getitem__(self, i):
+        return self._base[i]
+
+    @ptr_safe_exec(2)
+    def __setitem__(self, k, v):
+        self._base[k] = v
+        ob = ptr_safe_base(self, NOTHING)
+        k, v = ptr_safe_args(self, k), ptr_safe_args(self, v)
+        try:
+            ob[k]=v
+        except:
+            return None
+
+    def __len__(self):
+        return len(self._base)
+
+    def safe_binop(f):
+        import operator
+        frame = sys._getframe(1)
+        name = "__%s__" % f.strip('_')
+        func = getattr(operator, f)
+        check = ptr_base.__instancecheck__
+        def impl(self, other):
+            if check(other):
+                other = other._base
+            return func(self._base, other)
+        
+        return shitty()
+
+    safe_binop('sub')
+    def __add__(self, other):
+        return self._base + other._base
+
+    def __iter__(self):
+        return iter(self._base)
+
+    def __repr__(self):
+        name = class_name(self)
+        if self._base is self:
+            raise RecursionError("%s object refers to self" % name)
+        return '%s(%r)'%(name, self._base)
+
+    del safe_binop
+
+_get_class = type
+
 _is_string = basestring.__instancecheck__
 _is_module = ModuleType.__instancecheck__
 _is_list = list.__instancecheck__
 _get_frame = sys._getframe
-_get_module = sys.modules.get
+_find_module = sys.modules.get
 _STAR_IMPORT_IGNORE = frozenset((
     '__cached__',
     '__doc__',
@@ -122,6 +375,9 @@ _STAR_IMPORT_IGNORE = frozenset((
     '__all__',
     '__path__',
     ))
+_RIMP_IGNORE = _STAR_IMPORT_IGNORE - frozenset((
+    '__doc__',
+    '__all__'))
 _METADATA = frozenset((
     '__about__',
     '__annotations__',
@@ -176,7 +432,7 @@ class Scope(object):
         self._all = None
         return self
 
-    def check_modifiable(method):
+    def _check_modifiable(method):
         @functools.wraps(method)
         def wrap(self, *args, **kws):
             if _SCOPES.get(self._module) is not self:
@@ -192,10 +448,11 @@ class Scope(object):
         if module in _SCOPES:
             raise ValueError('%r is already being modified'%self.module_name)
         __all__ = validate_all(self._module)
-        self._all = [] if __all__ is None else __all__
+        if __all__ is not None:
+            self._all = __all__
         return _SCOPES.setdefault(self._module, self)
 
-    @check_modifiable
+    @_check_modifiable
     def __exit__(self, *args):
         module = self._module
         __all__ = self._all
@@ -206,22 +463,25 @@ class Scope(object):
                              %self.module_name)
         _SCOPES.pop(module)
 
-    @check_modifiable
+    @_check_modifiable
     def __setitem__(self, key, value):
         self._module.__dict__[key] = value
 
-    @check_modifiable
+    @_check_modifiable
     def __delitem__(self, key):
         del self._module.__dict__[key]
 
-    @check_modifiable
+    @_check_modifiable
     def extend_all(self, elems):
-        if set(elems) - dict_keys(self._module.__dict__):
-            args = ', '.join(map(repr, uniques)), self.module_name
+        missing = set(elems) - dict_keys(self._module.__dict__)
+        if missing:
+            args = ', '.join(map(repr, missing)), self.module_name
             raise NameError('names %s do not exist in %s'%args)
-        return self._all.extend(elems)
+        if self._all is None:
+            self._all = []
+        self._all.extend(elems)
 
-    @check_modifiable
+    @_check_modifiable
     def update_namespace(self, d=(), **kws):
         """module.__dict__.update(d, **kws)"""
         return self._module.__dict__.update(d, **kws)
@@ -252,7 +512,7 @@ class Scope(object):
         if pop:
             _SCOPES.pop(module, None)
 
-    def update(self, d=(), **kws):
+    def public_update(self, d=(), **kws):
         d = dict(d, **kws)
         self.update_namespace(d)
         self.extend_all(d)
@@ -307,7 +567,7 @@ class Scope(object):
     def __reduce__(self):
         module = self._module
         name = module.__name__
-        if _get_module(name) is not module:
+        if _find_module(name) is not module:
             raise ValueError('cannot pickle modules not in sys.modules')
         entered = module in _SCOPES
         instance = _SCOPES.pop(module, self)
@@ -335,54 +595,137 @@ class Scope(object):
     def __repr__(self):
         return '<%s.__all__: %s>'%(self.module_name, self._all)
 
-def _navframe(frame):
-    while True:
-        try:
-            print(frame.f_globals['__name__'])
-            frame = frame.f_back
-        except:
-            return
+    _check_modifiable = staticmethod(_check_modifiable)
 
 class InvalidAllError(Exception):
     pass
 
 def validate_all(module):
     """See if a module has a valid __all__ attribute"""
-    __all__ = getattr(module, '__all__', _SENTINEL)
-    if __all__ is _SENTINEL:
+    try:
+        __all__ = module.__all__
+    except:
         return None
     if hasattr(__all__, 'index'):
         if all(map(_is_string, __all__)):
             import_list = set(__all__)
             if import_list.issubset(dict_keys(module.__dict__)):
                 return __all__[:]
-            error = InvalidAllError('module %r has names in its __all__ that '
-                                    "don't actually exist"%module.__name__)
+            error = InvalidAllError('%s.__all__ contain references to '
+                                    'non-existing names')
         else:
             error = InvalidAllError('module %r has an __all__ containing '
                                     'invalid types'%module.__name__)
     else:
-        error = InvalidALlError('module %r has an __all__ that is not '
+        error = InvalidAllError('module %r has an __all__ that is not '
                                 'indexable so it cannot be used for star '
                                 'imports'%module.__name__)
     raise error
 
-def validate_module(module_or_name):
-    if _is_string(module_or_name):
-        module = sys.modules.get(module_or_name, _SENTINEL)
-        if module is _SENTINEL:
-            module = importlib.import_module(module_or_name)
-    else:
-        module = module_or_name
-    if not _is_module(module):
-        raise TypeError('%r is not a module or string'%module_or_name)
+PY_MODULE = 'PY_MODULE'
+EXT_MODULE = 'EXT_MODULE'
+PY_MODULES = set()
+
+_is_ext_module = lambda m: module_type(m) is EXT_MODULE
+_is_py_module = PY_MODULES.__contains__
+
+def get_module2(ob, m_name=None, m_file=None, m_type=None):
+
+    m_name = ptr() if m_name is None else m_name
+    m_file = ptr() if m_file is None else m_file
+    m_type = ptr() if m_type is None else m_type
+    module = None
+
+    if _is_module(m_name(ob)):
+        module = sys.modules.get(m_name(ob.__name__))
+
+    if _is_string(m_name()):
+        module = sys.modules.get(m_name())
+        if module is None:
+            try:
+                module = importlib.import_module(m_name())
+            except:
+                module = _get_module_from_filename(m_name())
+                m_name(module.__name__)
+
+    if module is None:
+        raise TypeError("can't get module from %r"%ob)
+
+    assert m_name() == module.__name__
+    if not sys.modules.get(m_name(module.__name__)):
+        raise SystemError("coudn't find '%s' in sys.modules"%m_name())
+    x, y = (ptr*2)()
+
+    m_type(EXT_MODULE if m_file(getattr(module, '__file__', None)) is None else PY_MODULE)
     return module
 
+def _get_module_from_filename(file):
+    """Find the module that corresponds to `file`"""
+
+    file = file.lower()
+    lowercase = methodcaller('lower')
+
+    for name, module in dict_items(sys.modules):
+        module_file = getattr(module, '__file__', _SENTINEL)
+        if module_file is _SENTINEL:
+            continue
+        if file == lowercase(module_file):
+            return module
+    raise ValueError("couldn't load module file: '%s'"%file)
+
+def module_type(module, file=None):
+    if file is None:
+        file = ptr()
+    if not _is_module(module):
+        return file(None)
+
+    fp = getattr(ptr(file(module)), '__file__', NOTHING)
+    if _is_string(fp):
+        if _is_py_module(fp):
+            return PY_MODULE
+
+        import linecache
+        try:
+            linecache.getline(fp, 1)
+            PY_MODULES.add(fp)
+            return PY_MODULE
+        except:
+            pass
+        name = module.__name__
+        raise TypeError("couldn't find source file for %r"%name)
+    if fp is None:
+        return EXT_MODULE
+    msg = ("module.__file__ must be a string, not a '%s' object"%fp())
+    raise TypeError(msg)
+
+
+def get_module(ob, m_name=None, m_file=None):
+    m_name = ptr() if m_name is None else m_name
+    m_file = ptr() if m_file is None else m_file
+    exc = None
+    if _is_string(m_name(ob)):
+        try:
+            ob = importlib.import_module(ob)
+        except Exception as er:
+            exc = er
+        if exc is not None:
+            module = _get_module_from_filename(m_file(ob))
+    if not _is_module(ob):
+        exc = exc or TypeError('%r is not a module or string'%ob)
+        raise exc
+    if module_type(ob, m_file) is not None:
+        if not sys.modules.get(m_name(ob.__name__)):
+            raise ImportError("couldn't import %r", m_name())
+
+    return ob
+
+
+validate_module = get_module2
 is_not_public_name = methodcaller('startswith', '_')
 
-def iter_public_names(module):
-    """Iterate over all public attributes of `module`"""
-    return filterfalse(is_not_public_name, validate_module(module).__dict__)
+def iter_public_names(ob):
+    """Iterate over all public attributes of `ob`"""
+    return filterfalse(is_not_public_name, ob.__dict__)
 
 def iter_dunder_names(module):
     """Iterate over all dunder attributes of `module`"""
@@ -396,16 +739,6 @@ def iter_private_names(module):
         if k and k[0] == '_':
             if len(k) < 4 or (not (k[-2:] == '__' and k[:2] == '__')):
                 yield k
-
-def get_module_from_filename(file):
-    """Find the module that corresponds to `file`"""
-    file = file.lower()
-    lower = methodcaller('lower')
-    for name, module in dict_items(sys.modules):
-        module_file = getattr(module, '__file__', None)
-        if module_file and lower(module_file) == file:
-            return validate_module(module)
-    raise ValueError('no module found with the filename %r'%file)
 
 def get_full_name(obj):
     name = getattr(obj, '__qualname__', obj.__name__)
@@ -432,7 +765,7 @@ def safe_repr(obj, maxlen=50):
 
 def _get_calling_module(depth=0, *args, **kws):
     """Get the module that invoked a function"""
-    return _get_module(_get_frame(2+depth).f_globals.get('__name__'))
+    return _find_module(_get_frame(2+depth).f_globals.get('__name__'))
 
 def _validate_kws(kws):
     for kw in kws:
@@ -451,7 +784,7 @@ def _public(module, *objects, **kws):
                 update(_validate_public_alias(ob, context))
             else:
                 update(_validate_public_object(ob, context,  overwrite))
-        context.update(validated)
+        context.public_update(validated)
     return objects[0]
 
 def _validate_public_alias(ob, context):
@@ -504,12 +837,12 @@ def public_constants(**constants):
             if context[k] is not constants[k]:
                 args = context.module_name, k, generic_repr(context[k])
                 raise ValueError("'%s.%s' is already public as %s"%args)
-        context.update(constants)
+        context.public_update(constants)
     return constants
 
 @public
 def safe_star_import(module):
-    """Make sure a star import doesn't overwrite anything"""
+    """Make sure a normal star import doesn't overwrite anything"""
     module = validate_module(module)
     caller = _get_calling_module()
     with Scope(caller) as context, Scope(module) as imported_context:
@@ -518,33 +851,30 @@ def safe_star_import(module):
             args = context.module_name, name, generic_repr(context[name])
             raise NameError('%s.%s already exists as %s'%args)
         imported = {k: imported_context[k] for k in import_list}
-        context.update_namespace(imported)
+        context.namespace.update(imported)
     return imported
 
 @public
 def star_import(module, **kws):
     """Ignores default * import mechanics to import almost everything
 
-    If `overwrite` is True, allow the import to replace any names that
-    already exist instead of raising an error.
-
     If `ignore_private` is set to True, _sunder (private) names will
     not be imported.
+
+    Items in `ignore_list` will not be imported.
+
+    If `import_metadata` is true, even common metadata attributes
+    will be imported.
 
     Names that already exist in the calling module's namespace will
     be overwritten if `overwrite` is set to True, otherwise an error
     will be raised.
-
-    Items in `ignore_list` will not be imported.
-
-    If `ignore_metadata` is not true, even common metadata attributes
-    will be imported.
     """
     module = validate_module(module)
-    ignore_metadata = kws.pop('ignore_metadata', True)
+    import_metadata = kws.pop('import_metadata', False)
     ignore_private = kws.pop('ignore_private', False)
     overwrite = kws.pop('overwrite', False)
-    ignore_list = _METADATA if ignore_metadata else set()
+    ignore_list = set() if import_metadata else _METADATA
     ignore_list |= set(kws.pop('ignore_list', ())) | _STAR_IMPORT_IGNORE
     _validate_kws(kws)
     caller = _get_calling_module()
@@ -570,7 +900,7 @@ def star_import(module, **kws):
             else:
                 import_list -= context.keys()
         imported = {k:imported_context[k] for k in import_list}
-        context.update_namespace(imported)
+        context.namespace.update(imported)
     return imported
 
 @public
@@ -591,7 +921,7 @@ def public_from_import(module_or_name, *names, **kws):
                 if context.get_item(name, value) is not value:
                     args = context.module_name, name, generic_repr(ns[name])
                     raise ValueError("'%s.%s' is already public as %s"%args)
-        context.update(imported)
+        context.public_update(imported)
     return imported
 
 @public
@@ -612,7 +942,33 @@ def publish_module(module, **kws):
                 if context[name] is imported_context[name]:
                     continue
                 raise ImportError('%r already exists'%name)
-        context.update({k: imported_context[k] for k in import_list})
+        context.public_update({k: imported_context[k] for k in import_list})
+    return module
+
+@public
+def private_star_import(module_or_name, suffix='_', **kws):
+    """`from module import *` prefix any imported names with underscore
+
+    If `overwrite` is True, allow the import to replace any names that
+    already exist instead of raising an error.
+    """
+
+    overwrite = kws.pop('overwrite', False)
+    module = validate_module(module_or_name)
+    caller = _get_calling_module()
+    with Scope(caller) as context, Scope(module) as imported_context:
+        import_list = imported_context.get_star_imports()
+        private_names = {}
+        for name in import_list:
+            k = ('%s' if name.startswith('_') else '_%s')
+            private_names[k%name] = name
+        if not overwrite:
+            for name in context.keys() & dict_keys(private_names):
+                if context[name] is imported_context[name]:
+                    continue
+                raise ImportError('%r already exists'%name)
+        context.namespace.update({k: imported_context[v]
+                        for k, v in dict_items(private_names)})
     return module
 
 @public
@@ -634,10 +990,104 @@ def reverse_star_import(module_or_name, ignore=None):
                 del context[name]
 
 @public
-def reimport_module(module_or_name, reloader=_reload):
-    """Clear module's dict and reimport it"""
-    module = validate_module(module_or_name)
-    name = module.__name__
-    module.__dict__.clear()
-    module.__name__ = name
-    return reloader(module)
+def reimport_module(ob, local=True):
+    '''Rebuild a module from its source
+
+    If `local` is False, all other modules will be affected unless they
+    pre-imported things. Otherwise, no changes are made to sys.modules
+    and a brand new module whose namespace has been freshly repopulated
+    with brand new objects is returned. The module attributes necessary
+    to run the import system are always recycled.
+
+    NOTE: Extension modules cannot be reloaded. The most this can do
+    for extension modules is build a new module object for local use,
+    but since objects owned by extension modules are statically
+    allocated any changes made directly to the objects will be reflected
+    globally.
+    '''
+
+    m_name, m_type, m_name, m_file = (ptr*4)()
+    module = get_module2(ob, m_name, m_file, m_type)
+    result = ModuleType(m_name())
+    m_dict, r_dict = D(module), D(result)
+
+    if m_type() == EXT_MODULE:
+        if not local:
+            return module
+        r_dict.update(m_dict)
+        return result
+
+    for k in (dict_keys(r_dict) & dict_keys(m_dict)):
+        r_dict[k] = m_dict[k]
+
+    t_dict = r_dict.copy()
+    with open(m_file()) as fp:
+        r_code = compile(fp.read(), m_file(), 'exec')
+        exec(r_code, t_dict)
+
+    result.__file__ = m_file()
+    t_dict.update(r_dict)
+    d = {k: t_dict[k] for k in (dict_keys(t_dict) - dict_keys(r_dict))}
+    r_dict.update(d)
+
+    if not local:
+        result.__cached__ = module.__cached__
+        m_dict.clear()
+        m_dict.update(r_dict)
+        result = module
+    return result
+
+D = attrgetter('__dict__')
+DL = attrgetter('__dict__.__len__')
+DI = attrgetter('__dict__.items')
+DK = attrgetter('__dict__.keys')
+PROFILES = {}
+@public
+def profile():
+    caller = _get_calling_module()
+    if caller in PROFILES:
+        profile_end = PROFILES.pop(caller)
+        return profile_end()
+    t = time.time()
+    def profile_end():
+        print('published %s in %.03f seconds'%(caller.__name__,time.time() - t))
+    PROFILES[caller] = profile_end
+
+@public
+def import_as_copy(module_or_name):
+    ''' Build a shallow copy of a module'''
+
+
+    module = reimport_module(module_or_name)
+
+    caller = _get_calling_module()
+    for name, v in dict_items(sys.modules):
+        if v is module:
+            break
+    else:
+        raise ValueError('%r doesnt exist in sys.modules'%name)
+    copy_of_module = reimport_module(module_or_name)
+    with Scope(caller) as context:
+        context[name] = copy_of_module
+    sys.modules[name] = module
+    return copy_of_module
+
+@public
+def import_from_object(ob, overwrite=False):
+    """Pretends `ob` is a module and imports its public attributes
+
+    Returns all of the "imports" in a new dict.
+    """
+    cls = _get_class(ob)
+    if issubclass(cls, ModuleType):
+        raise TypeError("module object has no methods")
+    with Scope(_get_calling_module()) as context:
+        ns = dict(cls.__dict__) # dict cast cause of MappingProxyType
+        p = set(iter_public_names(cls))
+        if not overwrite:
+            for k in p & context.keys():
+                raise ValueError("%r is already already exists"%k)
+        imported = {k:getattr(ob, k) for k in p}
+        context.public_update(**imported)
+    return imported
+no_erase = _RIMP_IGNORE.__contains__
