@@ -1,0 +1,147 @@
+
+from operator import attrgetter as AG
+from sys import _getframe as GF
+type_flags = type.__dict__['__flags__'].__get__
+
+class EnumDict(dict):
+
+    def __init__(self):
+        self.nextval = 0
+        self.members = {}
+
+    def set_member(self, k, v):
+        assert not k.startswith('__')
+
+        if v is None:
+            v = self.nextval
+
+        if k in self.members:
+            raise TypeError(f"multiple definitions for enum member {k!r}")
+
+        if not isinstance(v, int):
+            raise TypeError(f"enum member must be an integer, not {v!r}")
+        else:
+            self.nextval = v + 1
+
+        return self.members.setdefault(k, v)
+
+
+    def __getitem__(self, k):
+        if not k.startswith('__'):
+            v = self.set_member(k, None)
+        else:
+            v = self.get(k, self)
+            if v is self:
+                f = GF(1)
+                v = f.f_globals.get(k, self)
+                if v is self:
+                    v = f.f_builtins.get(k, self)
+                    if v is self:
+                        raise NameError(f'name {k!r} is not defined')
+        return v
+
+    def __setitem__(self, k, v):
+        if not k.startswith('__'):
+            self.set_member(k, v)
+        else:
+            dict.__setitem__(self, k, v)
+
+class EnumInt(int):
+
+    def __new__(cls, x, shared):
+        self = int.__new__(cls, x)
+        self.__dict__ = shared
+        return self
+
+    def __call__(self, n):
+        o = self.__objclass__
+        if n in self.__objclass__:
+            return o._members[o._vmap[n]]
+        raise TypeError(f'{n!r} is not a member of {self._oname!r}')
+    
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def __delete__(self, obj):
+        raise TypeError("can't delete attribute")
+
+    def __set__(self, obj, value):
+        raise AttributeError("can't set attribute")
+    
+    def __repr__(self):
+        oname = self._oname
+        sname = self.name
+        return f'<{oname}.{sname}: {int(self)}>'
+        
+class EnumType(type):
+
+    @classmethod
+    def __prepare__(cls, name, bases):
+        return EnumDict()
+
+    def __new__(cls, name, bases, ns):
+        # never understood why enum doesn't use a shared dict like this...
+        shared = {'_oname': name}
+        members = {k:EnumInt(v, shared) for k, v in ns.members.items()}
+        shared.update(members)
+        mp = dict(**ns,
+                  **members,
+                  _members=members
+                  )
+        self = type.__new__(cls, name, bases, mp)
+        shared['__objclass__'] = self
+        setattr(self, '_vmap', {v:k for k,v in members.items()})
+        setattr(self, '_names', (*members,))
+        setattr(self, '_values', (*members.values(),))
+        GF(1).f_locals.update(members)
+        return self
+
+    def __repr__(self):
+        s = ', '.join(f'{k}={v!r}' for k, v in self._members.items())
+        return f'{self.__name__}({s})'
+
+    __iter__ = property(AG('_values.__iter__'))
+    __contains__ = property(AG('_values.__contains__'))
+
+class Enumeration(metaclass=EnumType):
+
+    def __new__(cls, *args):
+        return object.__new__(cls)
+        
+    def __repr__(self):
+        return f'<Enumeraton {type(self).__name__!r}>'
+
+class PyTypeFlags(Enumeration):
+    HEAPTYPE=9
+    BASETYPE
+    #unused = 11
+    READY=12
+    READYING
+    HAVE_GC
+    HAVE_STACKLESS_EXTENSION
+    # stackless uses two bits
+    #unused =17
+    HAVE_VERSION_TAG=18
+    VALID_VERSION_TAG
+    IS_ABSTRACT
+    # unused 21/22
+    INT_SUBCLASS=23
+    LONG_SUBCLASS, LIST_SUBCLASS, TUPLE_SUBCLASS, STRING_SUBCLASS
+    UNICODE_SUBCLASS, DICT_SUBCLASS, BASE_EXC_SUBCLASS, TYPE_SUBCLASS
+
+def type_has_feature(tp, ft):
+    return not not (type_flags(tp) & (1 << ft))
+
+if __name__ == '__main__':
+    for tp, ft in  {PyTypeFlags: HEAPTYPE,
+                    int:LONG_SUBCLASS,
+                    list:LIST_SUBCLASS,
+                    tuple:TUPLE_SUBCLASS,
+                    bytes: STRING_SUBCLASS,
+                    str: UNICODE_SUBCLASS,
+                    dict: DICT_SUBCLASS,
+                    TypeError: BASE_EXC_SUBCLASS,
+                    type: TYPE_SUBCLASS
+                    }.items():
+        assert type_flags(tp) & (1 << ft)
+        assert type_has_feature(tp, ft), tp.__name__
