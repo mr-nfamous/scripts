@@ -1,0 +1,33 @@
+
+from _operator import attrgetter as AG, itemgetter as IG, methodcaller as MC
+from types import *
+from collections import *
+
+class ConstBase:
+
+    def __init__(self, constant, cached=True):
+        self.constant = constant
+        self.cached = self if not cached else constant
+
+    def cache(self, res, obj):
+        self.cached(obj)[self.name] = res
+
+    def __set_name__(self, cls, name):
+        self.name = name
+        if self.cached is not self:
+            self.cached = cls.__dict__['__dict__'].__get__
+
+class Constant(ConstBase):
+    def __get__(self, obj, cls):
+        res = self.constant
+        if obj is not None and self.cached:
+            self.cache(res, obj)
+        return res
+
+class DynamicConstant(ConstBase):
+    'Zero argument function called to generate a default value'
+    def __get__(self, obj, cls):
+        res = self.constant()
+        if obj is not None and self.cached:
+            self.cache(res, obj)
+        return res
