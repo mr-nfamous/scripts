@@ -1,0 +1,31 @@
+
+import parser
+
+from sys import _getframe
+
+example = parser.suite(
+    '\n'.join([
+        'class List(list):',
+        '    def append(self, other): return super().append(other)'
+        ''])).compile()
+
+EX_CODE = example.co_consts[0]
+
+
+def exec_class_body(class_dict, class_body):
+    context = _getframe(1)
+    f_globals = context.f_globals
+    t_locals = dict(
+        f_code    = class_body,
+        f_locals  = class_dict,
+        f_globals = f_globals)
+    src = (r'f_locals["__classcell__"] = eval(f_code, f_globals, f_locals)')
+    t_code = compile(src, '', 'exec')
+    exec(t_code, f_globals, t_locals)
+
+classdict = {}
+exec_class_body(classdict, EX_CODE)
+List = type('List', (list,), classdict)
+li = List(); li.append(99); li.pop()
+
+
