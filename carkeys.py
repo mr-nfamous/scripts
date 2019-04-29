@@ -13,9 +13,30 @@ def join(sep, seq):
 	it = starmap(concat, it)
 	return chained(it)
     
+def mapping_pop(D, k, *d):
+    try:
+        d = D[k]
+    except LookupError:
+        if not d:
+            raise
+        [d] = d
+        return d
+    del D[k]
+    return d
+
 def startswith(seq, prefix, *subseq):
-    if not prefix:    return True
-    if seq == prefix: return True
+    '''The same as str.startswith except works with any two iterables
+
+        >>> a = 'concurrent.futures.Executor'.split('.')
+        >>> startswith(a, ('concurrent','futures'))
+        True
+        >>> startswith(a, ('futures',), 1)
+        True
+    '''
+    if not prefix:
+        return True
+    if seq == prefix:
+        return True
     if subseq:
         if len(subseq) == 1:
             [a] = subseq
