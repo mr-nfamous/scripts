@@ -1,4 +1,7 @@
 
+__all__ = ['memoized']
+from functools import partial
+from weakref import ref as weakref
 
 class MemoizerType(type):
 
